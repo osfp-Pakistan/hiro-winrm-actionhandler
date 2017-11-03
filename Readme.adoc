@@ -9,9 +9,22 @@ ifdef::env-github[]
 :warning-caption: :warning:
 endif::[]
 
+== Requirements ==
+
+=== Network ===
+
+* HIRO Engine Node \<\-> HIRO Repository (for ActionHandler Components)
+* HIRO Engine Node \<\-> CentOS/RHEL Repository (for Kerberos Workstation Components)
+* HIRO Engine Node \<\-> Windows Targets on ports 5985 (HTTP) and/or 5986 (HTTPS)
+* HIRO Engine Node \<\-> Windows Domain Controller on Kerberos Ports
+
+=== Active Directory ===
+
+* An AD Account that is part of the Domain Administrators group
+
 == Setup ==
 
-=== Installation ===
+=== ActionHandler Installation ===
 
 ==== Activate the SCL channel/repository ====
 * On RHEL, execute
@@ -71,12 +84,156 @@ service hiro-winrm-actionhandler start
 service hiro-winrm-actionhandler status
 ----
 
-=== Configure Kerberos ===
+=== Kerberos Client Installation & Configuration ===
 
+On the HIRO Engine Node install the Kerberos workstation components:
+[source,console]
+----
+yum install krb5-libs krb5-workstation
+----
+
+Modify the Kerberos config */etc/krb5.conf* to include the domain information.
+
+krb5.conf sample:
+```
+[logging]
+ default = FILE:/var/log/krb5libs.log
+ kdc = FILE:/var/log/krb5kdc.log
+ admin_server = FILE:/var/log/kadmind.log
+
+[libdefaults]
+ default_realm = WINLAB.LOCAL
+ dns_lookup_realm = false
+ dns_lookup_kdc = false
+ ticket_lifetime = 24h
+ renew_lifetime = 7d
+ forwardable = true
+
+[realms]
+ WINLAB.LOCAL = {
+  kdc = dc1.winlab.local
+  admin_server = dc1.winlab.local
+ }
+
+[domain_realm]
+ .winlab.local = WINLAB.LOCAL
+ winlab.local = WINLAB.LOCAL
+```
+
+Use kinit to manually test Kerberos authentication:
+[source,console]
+----
+kinit user@WINLAB.LOCAL
+----
+
+The command *klist* should now show a valid Kerberos TGT.
+
+Run the command *kdestroy* to remove the above ticket, as it was only for testing.
+
+==== Create a Keytab File ====
+
+On the HIRO Engine Node, use the following series of commands to create our Keytab file:
+[source,console]
+----
+ktutil
+addent -password -p username@MYDOMAIN.COM -k 1 -e RC4-HMAC
+- enter password for username -
+wkt username.keytab
+----
+TIP: link:http://www.itadmintools.com/2011/07/creating-kerberos-keytab-files.html[Sample instructions can be found here]
+
+The default location for keytabs is `/opt/autopilot/conf/external_actionhandlers/keytabs/`.
+
+Test Keytab file:
+[source,console]
+----
+kinit -k -t /path/to/Keytab user@DOMAIN
+----
+*klist* should now show a valid Kerberos TGT.
+*kdestroy* will remove the ticket.
+
+IMPORTANT: HIRO will need permissions to access the keytab file to be able to utilize it
+
+=== Configuring a Target Windows Server ===
+
+Windows has a command for WinRM "Quick Configuration":
+
+[source,console]
+----
+Set-wsmanquickconfig
+----
+
+Check if WinRM service is already running:
+[source,console]
+----
+Get-Service WinRM
+----
+
+Check the WinRM service configuration:
+[source,console]
+----
+winrm g winrm/config/Service
+----
+
+Sample output:
+```
+Service
+    RootSDDL = O:NSG:BAD:P(A;;GA;;;BA)(A;;GR;;;IU)S:P(AU;FA;GA;;;WD)(AU;SA;GXGW;;;WD)
+    MaxConcurrentOperations = 4294967295
+    MaxConcurrentOperationsPerUser = 1500
+    EnumerationTimeoutms = 240000
+    MaxConnections = 300
+    MaxPacketRetrievalTimeSeconds = 120
+    AllowUnencrypted = true
+    Auth
+        Basic = false
+        Kerberos = true
+        Negotiate = true
+        Certificate = false
+        CredSSP = false
+        CbtHardeningLevel = Relaxed
+    DefaultPorts
+        HTTP = 5985
+        HTTPS = 5986
+    IPv4Filter = *
+    IPv6Filter = *
+    EnableCompatibilityHttpListener = false
+    EnableCompatibilityHttpsListener = false
+    CertificateThumbprint
+    AllowRemoteAccess = true
+```
 [IMPORTANT]
 ====
-This part is not finished, yet.
+* `AllowUnencrypted = true` is only required if we are accessing the server over HTTP. Can be changed with command:
+[source,console]
+----
+winrm s winrm/config/Service '@{AllowUnencrypted="True"}'
+----
+* `Kerberos = true` should be true by default. Can be changed with command:
+[source,console]
+----
+winrm s winrm/config/Service/Auth '@{Kerberos="True"}'
+----
 ====
+
+Check for running Listeners:
+[source,console]
+----
+winrm e winrm/config/listener
+----
+
+Sample output:
+```
+Listener
+    Address = *
+    Transport = HTTP
+    Port = 5985
+    Hostname
+    Enabled = true
+    URLPrefix = wsman
+    CertificateThumbprint
+    ListeningOn = 127.0.0.1, 192.168.105.240, ::1, fe80::5efe:192.168.105.240%15, fe80::ffff:ffff:fffe%14
+```
 
 === Configure the HIRO Engine ===
 Add the following section to your `/opt/autopilot/conf/aae.yaml` and restart the engine.
